@@ -1,6 +1,6 @@
 # StarlingExamples
 
-Example programs that use [Starling](https://github.com/starlinghq/starling) to solve real problems in .NET: reading a website, organising photos, finding a moment in a video, triaging feedback. Each one is a small console program that downloads its models once, then runs on your machine with the network off. Nothing is sent to a hosted API.
+Example programs that use [Starling](https://github.com/starlinghq/starling) to solve real problems in .NET: reading a website, organising photos, finding a moment in a video, triaging feedback. Each one is a small console program that downloads its models once; after that the models run on your machine and never use the network (an example that reads a website still fetches the site). Nothing is sent to a hosted API.
 
 They are written as package consumers: every example references the published `Starlings.*` packages on nuget.org (0.5.0) and builds on its own, outside this repository. For the API itself, the [Starling README](https://github.com/starlinghq/starling#readme) and its [samples](https://github.com/starlinghq/starling/tree/main/ai-dotnet/samples) are the reference. The examples here combine several models, and ML.NET where classical machine learning fits, into one complete job each.
 
