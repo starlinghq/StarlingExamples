@@ -115,12 +115,22 @@ internal sealed class Crawler(HttpClient http, CrawlerOptions options)
             words = 0;
         }
 
-        foreach (IElement element in root.QuerySelectorAll("h1, h2, h3, h4, p, li, dd, blockquote, pre, td"))
+        const string Blocks = "p, li, dd, blockquote, pre, tr, caption, div";
+        foreach (IElement element in root.QuerySelectorAll("h1, h2, h3, h4, " + Blocks))
         {
-            // A list item inside a paragraph-level block is read with its parent.
-            if (element.ParentElement?.Closest("p, li, dd, blockquote, pre, td") is not null)
+            // A block inside another block is read with its parent; a div only counts when it holds text itself
+            // (an alert or a notice written without a <p>), not when it only wraps other blocks.
+            if (element.ParentElement?.Closest(Blocks.Replace(", div", "")) is not null)
                 continue;
-            string text = Clean(element.TextContent);
+            if (element.LocalName == "div"
+                && (element.QuerySelector("h1, h2, h3, h4, " + Blocks) is not null
+                    || !element.ChildNodes.Any(n => n.NodeType == NodeType.Text && !string.IsNullOrWhiteSpace(n.TextContent))
+                       && element.Children.All(c => c.LocalName is not ("strong" or "em" or "b" or "i" or "a" or "span"))))
+                continue;
+            // A table row reads as "Saturday: 10:00 to 16:00", not as loose cells.
+            string text = element.LocalName == "tr"
+                ? string.Join(": ", element.Children.Select(c => Clean(c.TextContent)).Where(t => t.Length > 0))
+                : Clean(element.TextContent);
             if (text.Length == 0)
                 continue;
             if (element.LocalName is "h1" or "h2" or "h3" or "h4")

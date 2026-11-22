@@ -16,6 +16,8 @@ internal sealed class SampleServer : IDisposable
         loop = Task.Run(ServeAsync);
     }
 
+    public static Uri DefaultUrl { get; } = new("http://localhost:8787/");
+
     public Uri Url { get; }
 
     private async Task ServeAsync()
@@ -41,7 +43,12 @@ internal sealed class SampleServer : IDisposable
                 response.StatusCode = 404;
                 continue;
             }
-            response.ContentType = Path.GetExtension(path) == ".html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
+            response.ContentType = Path.GetExtension(path) switch
+            {
+                ".html" => "text/html; charset=utf-8",
+                ".css" => "text/css; charset=utf-8",
+                _ => "text/plain; charset=utf-8",
+            };
             byte[] body = await File.ReadAllBytesAsync(path);
             await response.OutputStream.WriteAsync(body);
         }

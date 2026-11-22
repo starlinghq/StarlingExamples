@@ -13,7 +13,7 @@ They are written as package consumers: every example references the published `S
 
 | Example | What it does | Models | Status |
 | --- | --- | --- | --- |
-| [SiteReader](SiteReader) | Crawls a website politely, works out its sections, and answers questions with the page each answer came from | e5, GLiNER2, Qwen3.5; ML.NET k-means | Available |
+| [SiteReader](SiteReader) | Crawls a website politely, works out its sections, and answers questions with the page each answer came from; optionally renders the pages to see their layout (banners, tables, maps, forms) and search them by description | e5, GLiNER2, Qwen3.5, EmbeddingGemma 2 (image); ML.NET k-means; Playwright | Available |
 | PhotoAlbums | Sorts a folder of photos into albums and names them; finds photos from a description | EmbeddingGemma 2 (image); ML.NET k-means | Planned |
 | VideoMoments | Finds where in a video something happens ("the dog jumps into the lake") and prints timestamps | EmbeddingGemma 2 (video, FFmpeg 8) | Planned |
 | FeedbackRadar | Groups customer reviews or tickets by topic, flags near-duplicates and unusual ones, pulls out the products and places mentioned | e5 in an ML.NET pipeline (clustering, anomaly detection), GLiNER2 | Planned |
