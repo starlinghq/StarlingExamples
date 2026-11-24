@@ -50,7 +50,7 @@ async Task<int> RunAsync()
     string? cache = null;
     string indexDir = "site-index";
     int maxPages = 50;
-    int delayMs = 500;
+    int? delayMs = null;
     int? sections = null;
     int maxRegions = 5;
     var verification = CacheVerification.Sha256;
@@ -116,13 +116,13 @@ async Task<int> RunAsync()
             return FindRegions(VisualIndex.TryLoad(visualPath) ?? throw new FileNotFoundException($"No {visualPath}; run look first."),
                 positional, acquisition, indexDir);
         case "crawl" when positional is not null:
-            return await CrawlAsync(positional, maxPages, TimeSpan.FromMilliseconds(delayMs), acquisition, indexDir, indexPath);
+            return await CrawlAsync(positional, maxPages, TimeSpan.FromMilliseconds(delayMs ?? (positional == "sample" ? 0 : 500)), acquisition, indexDir, indexPath);
         case "map" when positional is null:
             return await MapAsync(SiteIndex.Load(indexPath), VisualIndex.TryLoad(visualPath), sections, acquisition);
         case "ask" when positional is not null:
             return await AskAsync(SiteIndex.Load(indexPath), VisualIndex.TryLoad(visualPath), positional, acquisition);
         case "explore":
-            return await ExploreAsync(positional, look, maxPages, TimeSpan.FromMilliseconds(delayMs), maxRegions, sections,
+            return await ExploreAsync(positional, look, maxPages, TimeSpan.FromMilliseconds(delayMs ?? (positional == "sample" ? 0 : 500)), maxRegions, sections,
                 acquisition, indexDir, indexPath, visualPath);
         default:
             return Usage();
@@ -352,6 +352,8 @@ static async Task<(TimeSpan Generation, int Tokens)> AnswerAsync(SiteIndex index
 static async Task<int> ExploreAsync(string? target, bool look, int maxPages, TimeSpan delay, int maxRegions, int? sections,
     ModelAcquisitionOptions acquisition, string indexDir, string indexPath, string visualPath)
 {
+    // Every model this session needs starts loading now, in parallel, while the crawl fetches pages.
+    Models.Preload(acquisition, visual: look || File.Exists(visualPath));
     if (target is not null)
         await CrawlAsync(target, maxPages, delay, acquisition, indexDir, indexPath);
     SiteIndex index = SiteIndex.Load(indexPath);
@@ -387,12 +389,14 @@ static async Task<int> ExploreAsync(string? target, bool look, int maxPages, Tim
 // from the order of the HTML: the cases a text-only reader gets wrong.
 static async Task<int> LookAsync(SiteIndex index, int maxRegions, ModelAcquisitionOptions acquisition, string indexDir, string visualPath)
 {
-    var embedder = Models.EmbeddingGemma2(acquisition);
+    // Start loading EmbeddingGemma 2 (if explore has not already) and render the pages meanwhile.
+    Models.PreloadVisual(acquisition);
     using SampleServer? server = index.Site == SampleServer.DefaultUrl.ToString()
         ? new SampleServer(Path.Combine(AppContext.BaseDirectory, "sample-site"), SampleServer.DefaultUrl.Port)
         : null;
     var started = System.Diagnostics.Stopwatch.StartNew();
-    VisualIndex visual = await Visual.LookAsync(index, Path.Combine(indexDir, "shots"), maxRegions, embedder, Console.WriteLine);
+    VisualIndex visual = await Visual.LookAsync(index, Path.Combine(indexDir, "shots"), maxRegions,
+        () => Models.EmbeddingGemma2(acquisition), Console.WriteLine);
     visual.Save(visualPath);
     int regionCount = visual.Pages.Sum(p => p.Regions.Count);
     Console.WriteLine(string.Create(CultureInfo.InvariantCulture,

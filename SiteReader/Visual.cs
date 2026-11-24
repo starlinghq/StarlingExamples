@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Numerics.Tensors;
 using System.Text.Json;
 using Microsoft.Playwright;
@@ -65,7 +67,7 @@ internal static class Visual
         """;
 
     public static async Task<VisualIndex> LookAsync(SiteIndex index, string shotsDir, int maxRegions,
-        EmbeddingGemma2MultimodalEmbedder embedder, Action<string> log)
+        Func<EmbeddingGemma2MultimodalEmbedder> getEmbedder, Action<string> log)
     {
         Directory.CreateDirectory(shotsDir);
         using IPlaywright playwright = await Playwright.CreateAsync();
@@ -77,19 +79,27 @@ internal static class Visual
         });
 
         var pages = new List<VisualPage>();
-        // Site furniture (the same header and footer on every page) is embedded once and reused.
-        var seenBlocks = new Dictionary<(string Tag, string Text, double Width, double Height), float[]>();
+        // Site furniture (the same header and footer on every page) is cropped and embedded once; later copies point
+        // at the first crop. New crops are embedded in batches after the pages are rendered.
+        var firstCrop = new Dictionary<(string Tag, string Text, double Width, double Height), string>();
+        var toEmbed = new List<string>();
+        var render = new Stopwatch();
+        var shoot = new Stopwatch();
         string[] urls = [.. index.Passages.Select(p => p.Url).Distinct()];
         for (int n = 0; n < urls.Length; n++)
         {
             string url = urls[n];
-            await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.NetworkIdle });
-            string slug = $"page{n + 1:D3}";
-            string viewportPath = Path.Combine(shotsDir, $"{slug}.png");
-            await page.ScreenshotAsync(new() { Path = viewportPath });
-
+            render.Start();
+            // The load event, not network idle: network idle waits at least 500 ms after the last request on every page.
+            await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.Load });
             var found = JsonSerializer.Deserialize<List<FoundRegion>>(await page.EvaluateAsync<string>(FindRegionsScript),
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            render.Stop();
+            string slug = $"page{n + 1:D3}";
+            string viewportPath = Path.Combine(shotsDir, $"{slug}.png");
+            shoot.Start();
+            await page.ScreenshotAsync(new() { Path = viewportPath });
+            shoot.Stop();
             // Keep the blocks a visitor is most likely to notice: the largest ones, nearer the top first.
             var kept = found
                 .Where(r => r.Width * r.Height >= 8000)
@@ -99,23 +109,48 @@ internal static class Visual
             var regions = new List<VisualRegion>();
             foreach (FoundRegion r in kept)
             {
-                string cropPath = Path.Combine(shotsDir, $"{slug}-r{regions.Count + 1}.png");
-                await page.ScreenshotAsync(new()
-                {
-                    Path = cropPath,
-                    FullPage = true,
-                    Clip = new() { X = (float)r.X, Y = (float)r.Y, Width = (float)r.Width, Height = (float)Math.Min(r.Height, 2000) },
-                });
                 var key = (r.Tag, r.Text, Math.Round(r.Width), Math.Round(r.Height));
-                if (!seenBlocks.TryGetValue(key, out float[]? vector))
-                    seenBlocks[key] = vector = embedder.Embed(EmbeddingGemma2ImageDecoder.DecodeFile(cropPath));
+                if (!firstCrop.TryGetValue(key, out string? crop))
+                {
+                    crop = $"{slug}-r{regions.Count + 1}.png";
+                    shoot.Start();
+                    await page.ScreenshotAsync(new()
+                    {
+                        Path = Path.Combine(shotsDir, crop),
+                        FullPage = true,
+                        Clip = new() { X = (float)r.X, Y = (float)r.Y, Width = (float)r.Width, Height = (float)Math.Min(r.Height, 2000) },
+                    });
+                    shoot.Stop();
+                    firstCrop[key] = crop;
+                    toEmbed.Add(crop);
+                }
                 regions.Add(new VisualRegion(r.Tag, r.Role, r.SourceOrder, r.X, r.Y, r.Width, r.Height,
-                    r.Y < ViewportHeight, r.Text, Path.GetFileName(cropPath), vector, ""));
+                    r.Y < ViewportHeight, r.Text, crop, [], ""));
             }
-            float[] viewportVector = embedder.Embed(EmbeddingGemma2ImageDecoder.DecodeFile(viewportPath));
-            pages.Add(new VisualPage(url, Path.GetFileName(viewportPath), viewportVector, regions));
+            // The viewport screenshot is kept for people to look at; nothing searches it, so it is not embedded.
+            pages.Add(new VisualPage(url, Path.GetFileName(viewportPath), [], regions));
             log($"look  {new Uri(url).PathAndQuery} ({regions.Count} regions)");
         }
+
+        // Rendering needs no model, so it runs while EmbeddingGemma 2 may still be loading; wait for it only here.
+        EmbeddingGemma2MultimodalEmbedder embedder = getEmbedder();
+        var embed = Stopwatch.StartNew();
+        var vectors = new Dictionary<string, float[]>();
+        foreach (string[] batch in toEmbed.Chunk(8))
+        {
+            float[][] batchVectors = embedder.EmbedBatch([.. batch.Select(c => EmbeddingGemma2ImageDecoder.DecodeFile(Path.Combine(shotsDir, c)))]);
+            for (int i = 0; i < batch.Length; i++)
+                vectors[batch[i]] = batchVectors[i];
+        }
+        foreach (VisualPage p in pages)
+        {
+            for (int i = 0; i < p.Regions.Count; i++)
+                p.Regions[i] = p.Regions[i] with { Vector = vectors[p.Regions[i].Crop] };
+        }
+        embed.Stop();
+        log(string.Create(CultureInfo.InvariantCulture,
+            $"(rendering {render.Elapsed.TotalSeconds:F1} s, screenshots {shoot.Elapsed.TotalSeconds:F1} s for {toEmbed.Count + urls.Length}, " +
+            $"embedding {embed.Elapsed.TotalSeconds:F1} s for {toEmbed.Count} distinct blocks)"));
 
         // Label every region against the descriptions, relative to how the whole site matches each description.
         float[][] labelVectors = embedder.EmbedBatch(

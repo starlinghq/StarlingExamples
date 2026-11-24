@@ -6,7 +6,7 @@ Everything runs on your machine. The crawl and the optional browser step fetch t
 
 | Step | What it uses |
 | --- | --- |
-| `crawl` | A polite crawler (same site only, robots.txt, one request at a time, 500 ms apart, at most 50 pages, a named user agent). Each page becomes passages; [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) embeds them and [GLiNER2](https://huggingface.co/fastino/gliner2-base-v1) pulls out people, places, organisations, dates, events and products. |
+| `crawl` | A polite crawler (same site only, robots.txt, one request at a time, 500 ms apart (no pause for the bundled sample server), at most 50 pages, a named user agent). Each page becomes passages; [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) embeds them and [GLiNER2](https://huggingface.co/fastino/gliner2-base-v1) pulls out people, places, organisations, dates, events and products. |
 | `map` | ML.NET k-means groups the pages by what they say, not by their URLs. [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) writes a short overview. |
 | `ask` | e5 retrieves passages; Qwen3.5 answers from them and cites them. |
 | `look` (optional) | Headless Chromium renders each page at 1280x800 and splits it into the blocks a person sees. [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) embeds each block's screenshot in the same space as text, which labels the block and makes it searchable. |
@@ -54,7 +54,7 @@ The output below is from a run on Linux x64 on an Intel Core i7-5820K (AVX2), on
 ### crawl
 
 ```text
-Crawling http://localhost:8787/ (at most 50 pages, 500 ms apart)
+Crawling http://localhost:8787/ (at most 50 pages, 0 ms apart)
 read  / (1 passages)
 read  /visit/ (1 passages)
 ...
@@ -63,7 +63,7 @@ skip  /staff/ (robots.txt)
 Read 18 pages, 26 passages, 200 entity mentions. Saved site-index/index.json.
 ```
 
-About 20 seconds, most of it the delay between requests.
+The bundled sample server runs inside the same process, so the crawler does not pause between its pages; any other site gets 500 ms between requests (`--delay` changes it). The timings below that mention 18 s for `crawl` were measured with the 500 ms pause.
 
 ### map
 
@@ -206,7 +206,14 @@ The same comparison for a whole `explore sample --look` session (crawl, look, ma
 | Answers, after loading | 3.1 to 10.3 s | 0.3 to 2.0 s |
 | `find`, after loading | 0.04 to 0.07 s | 0.02 to 0.03 s |
 
-The CPU session ran while other work kept the CPU busy (load average up to 8), which is why its `look` took longer than the 4.5 minutes above. The SHA-256 check is the library's default and protects against a corrupted or altered cache. After `download` has verified the files once, `--verify size` checks only their sizes, which takes the check to zero on later runs (`ask` with three questions on CUDA: 16.7 s with SHA-256, 8.8 s with sizes only). Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
+The CPU session ran while other work kept the CPU busy (load average up to 8), which is why its `look` took longer than the 4.5 minutes above.
+
+Most of those 71 s were waiting, not computing, so `explore` now overlaps and skips work. The same session takes 26 s on CUDA (26.2 s and 26.6 s in two runs, with other work keeping the CPU at a load average near 5), with the same answers, sections, block labels and `find` scores:
+
+- All models start loading at once on separate threads, while the crawl runs. The SHA-256 checks stay; they now run on several cores at the same time instead of one after another.
+- `look` renders and screenshots the pages while EmbeddingGemma 2 is still loading, and waits for the model only when it starts embedding. Rendering waits for each page's load event instead of network idle, which waited at least 500 ms per page.
+- A block that repeats on every page (header, footer) is cropped and embedded once; the new crops are embedded in batches of 8. The viewport screenshots are still saved, but no longer embedded, since nothing searched them.
+- The crawler does not pause between requests to the bundled sample server, which runs inside the same process. Other sites still get 500 ms between requests unless `--delay` says otherwise. The SHA-256 check is the library's default and protects against a corrupted or altered cache. After `download` has verified the files once, `--verify size` checks only their sizes, which takes the check to zero on later runs (`ask` with three questions on CUDA: 16.7 s with SHA-256, 8.8 s with sizes only). Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
 
 ## What it gets wrong
 
