@@ -32,6 +32,23 @@ dotnet run -c Release -- look
 dotnet run -c Release -- find "a map of the library branches"
 ```
 
+Each of those commands is its own process, so each loads its models and drops them when it exits. `explore` does the whole job in one process, the way an application would: every model loads once, the first time a step needs it, and stays loaded for the questions after it.
+
+```sh
+dotnet run -c Release -- explore sample --look
+```
+
+```text
+...
+Ask a question, "find <description>" to search the page blocks, "map", or an empty line to stop.
+> Can I borrow a tile cutter, and what do I need to do first?
+Answer: [1] Safety induction is required for the tile cutter.
+(answered in 3.90 s: query embedding 16 ms, generation 3.88 s for 12 tokens, 3 tokens/s)
+> find a form to sign up
+  0.774  http://localhost:8787/services/membership.html  a form with text fields, 420x360 px at y=332 (above the fold)
+(found in 0.04 s)
+```
+
 The output below is from a run on Linux x64 on an Intel Core i7-5820K (AVX2), on the published 0.5.0 packages.
 
 ### crawl
@@ -177,7 +194,19 @@ Each model load prints where its time went, and `ask -` reads questions from sta
 | Answer of 76 tokens (prompt included) | 10.5 s | 2.1 s |
 | Answers of 10 to 12 tokens (prompt included) | 3.1 to 3.9 s | 0.3 to 0.4 s |
 
-Once the models are loaded, the GPU answers four to ten times faster; a one-question `ask` mostly measures the load. The SHA-256 check is the library's default and protects against a corrupted or altered cache. After `download` has verified the files once, `--verify size` checks only their sizes, which takes the check to zero on later runs (`ask` with three questions on CUDA: 16.7 s with SHA-256, 8.8 s with sizes only). Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
+Once the models are loaded, the GPU answers four to ten times faster; a one-question `ask` mostly measures the load.
+
+The same comparison for a whole `explore sample --look` session (crawl, look, map, three questions, two searches) in one process:
+
+| | CPU | CUDA |
+| --- | --- | --- |
+| Whole session | 416 s | 71 s |
+| `look` (60 regions) | 5.8 min | 0.5 min |
+| Loading all four models (SHA-256 checks included) | 31 s | 29 s |
+| Answers, after loading | 3.1 to 10.3 s | 0.3 to 2.0 s |
+| `find`, after loading | 0.04 to 0.07 s | 0.02 to 0.03 s |
+
+The CPU session ran while other work kept the CPU busy (load average up to 8), which is why its `look` took longer than the 4.5 minutes above. The SHA-256 check is the library's default and protects against a corrupted or altered cache. After `download` has verified the files once, `--verify size` checks only their sizes, which takes the check to zero on later runs (`ask` with three questions on CUDA: 16.7 s with SHA-256, 8.8 s with sizes only). Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
 
 ## What it gets wrong
 

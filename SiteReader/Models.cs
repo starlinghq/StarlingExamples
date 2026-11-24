@@ -19,20 +19,27 @@ internal static class Models
 
     private static OnnxSessionOptions Session => Cuda ? new OnnxSessionOptions { Provider = OnnxExecutionProvider.Cuda, CudaDeviceId = 0 } : new OnnxSessionOptions();
 
+    // One instance of each model per process, created on first use and kept until the process exits: loading is the
+    // expensive part (seconds), using a loaded model is not.
+    private static E5TextEmbedder? e5;
+    private static Gliner2EntityExtractor? gliner2;
+    private static EmbeddingGemma2MultimodalEmbedder? embeddingGemma2;
+    private static IChatClient? qwen;
+
     public static E5TextEmbedder E5(ModelAcquisitionOptions acquisition) =>
-        Load("e5", () => E5ModelAssets.OpenLocal(acquisition), files => E5TextEmbedder.Create(files, new E5EncoderOptions { Session = Session }));
+        e5 ??= Load("e5", () => E5ModelAssets.OpenLocal(acquisition), files => E5TextEmbedder.Create(files, new E5EncoderOptions { Session = Session }));
 
     public static Gliner2EntityExtractor Gliner2(ModelAcquisitionOptions acquisition) =>
-        Load("GLiNER2", () => Gliner2ModelAssets.OpenLocal(acquisition),
+        gliner2 ??= Load("GLiNER2", () => Gliner2ModelAssets.OpenLocal(acquisition),
             files => Gliner2EntityExtractor.Create(files, new Gliner2ExtractorOptions { Session = Session }));
 
     public static EmbeddingGemma2MultimodalEmbedder EmbeddingGemma2(ModelAcquisitionOptions acquisition) =>
-        Load("EmbeddingGemma 2", () => EmbeddingGemma2ModelAssets.OpenLocalImageAssets(acquisition),
+        embeddingGemma2 ??= Load("EmbeddingGemma 2", () => EmbeddingGemma2ModelAssets.OpenLocalImageAssets(acquisition),
             files => EmbeddingGemma2MultimodalEmbedder.Create(files, new EmbeddingGemma2MultimodalOptions { Session = Session }));
 
     // Qwen3.5 fp32x runs on both providers; on CUDA it goes through ONNX Runtime GenAI's CUDA build.
     public static IChatClient Qwen(ModelAcquisitionOptions acquisition) =>
-        Load("Qwen3.5", () => Qwen35ModelAssets.OpenLocal(Qwen35Variant.Fp32x, acquisition),
+        qwen ??= Load("Qwen3.5", () => Qwen35ModelAssets.OpenLocal(Qwen35Variant.Fp32x, acquisition),
             files => Qwen35ChatClient.Create(files,
                 new Qwen35ModelOptions { Provider = Cuda ? GenAIExecutionProvider.Cuda : GenAIExecutionProvider.Cpu }));
 

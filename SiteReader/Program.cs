@@ -44,7 +44,7 @@ catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowExcep
 
 async Task<int> RunAsync()
 {
-    if (args.Length == 0 || args[0] is not ("download" or "download-visual" or "crawl" or "look" or "map" or "ask" or "find"))
+    if (args.Length == 0 || args[0] is not ("download" or "download-visual" or "crawl" or "look" or "map" or "ask" or "find" or "explore"))
         return Usage();
 
     string? cache = null;
@@ -54,12 +54,15 @@ async Task<int> RunAsync()
     int? sections = null;
     int maxRegions = 5;
     var verification = CacheVerification.Sha256;
+    bool look = false;
     string? positional = null;
     for (int i = 1; i < args.Length; i++)
     {
         string option = args[i];
         if (option == "--cuda")
             Models.Cuda = true;
+        else if (option == "--look")
+            look = true;
         else if (option.StartsWith("--", StringComparison.Ordinal))
         {
             if (i + 1 == args.Length)
@@ -118,6 +121,9 @@ async Task<int> RunAsync()
             return await MapAsync(SiteIndex.Load(indexPath), VisualIndex.TryLoad(visualPath), sections, acquisition);
         case "ask" when positional is not null:
             return await AskAsync(SiteIndex.Load(indexPath), VisualIndex.TryLoad(visualPath), positional, acquisition);
+        case "explore":
+            return await ExploreAsync(positional, look, maxPages, TimeSpan.FromMilliseconds(delayMs), maxRegions, sections,
+                acquisition, indexDir, indexPath, visualPath);
         default:
             return Usage();
     }
@@ -128,7 +134,9 @@ static int Usage()
     Console.Error.WriteLine("""
         Every command except download takes --cuda (build with -p:NativeRuntime=cuda) and --verify size|sha256
         (default sha256). ask - reads questions from standard input and loads the models once.
-        usage: SiteReader download [--cache <dir>]
+        usage: SiteReader explore [<url | sample>] [--look] [crawl, look and map options]
+                   one process: crawl (or reuse the index), look, map, then questions; models load once
+               SiteReader download [--cache <dir>]
                SiteReader crawl <url | sample> [--max-pages <n>] [--delay <ms>] [--index <dir>] [--cache <dir>]
                SiteReader map [--sections <k>] [--index <dir>] [--cache <dir>]
                SiteReader ask "question" [--index <dir>] [--cache <dir>]
@@ -145,8 +153,8 @@ static async Task<int> CrawlAsync(string target, int maxPages, TimeSpan delay, M
     string indexDir, string indexPath)
 {
     // Load the models before the crawl, so a missing download fails fast and not after a long crawl.
-    using var embedder = Models.E5(acquisition);
-    using var extractor = Models.Gliner2(acquisition);
+    var embedder = Models.E5(acquisition);
+    var extractor = Models.Gliner2(acquisition);
 
     using SampleServer? server = target == "sample"
         ? new SampleServer(Path.Combine(AppContext.BaseDirectory, "sample-site"), SampleServer.DefaultUrl.Port)
@@ -238,7 +246,7 @@ static async Task<int> MapAsync(SiteIndex index, VisualIndex? visual, int? secti
             $"Sample: {members[0].Page.Passages[0].Text}");
     }
 
-    using IChatClient chat = Models.Qwen(acquisition);
+    IChatClient chat = Models.Qwen(acquisition);
     ChatMessage[] messages =
     [
         new(ChatRole.System, "You describe websites. Using only the outline, write two or three plain sentences saying who the " +
@@ -257,8 +265,8 @@ static async Task<int> MapAsync(SiteIndex index, VisualIndex? visual, int? secti
 // question, questions are read from standard input one per line and the models are loaded once for all of them.
 static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string question, ModelAcquisitionOptions acquisition)
 {
-    using var embedder = Models.E5(acquisition);
-    using IChatClient chat = Models.Qwen(acquisition);
+    var embedder = Models.E5(acquisition);
+    IChatClient chat = Models.Qwen(acquisition);
     IEnumerable<string> questions = question == "-"
         ? ReadLines(Console.In).Where(q => !string.IsNullOrWhiteSpace(q))
         : [question];
@@ -339,11 +347,47 @@ static async Task<(TimeSpan Generation, int Tokens)> AnswerAsync(SiteIndex index
     return (timer.Elapsed, tokens);
 }
 
+// The whole job in one process, the way an application would run it: every model loads once, the first time a step
+// needs it, and stays loaded for the questions that follow. Each later question costs only its own computation.
+static async Task<int> ExploreAsync(string? target, bool look, int maxPages, TimeSpan delay, int maxRegions, int? sections,
+    ModelAcquisitionOptions acquisition, string indexDir, string indexPath, string visualPath)
+{
+    if (target is not null)
+        await CrawlAsync(target, maxPages, delay, acquisition, indexDir, indexPath);
+    SiteIndex index = SiteIndex.Load(indexPath);
+    if (look)
+        await LookAsync(index, maxRegions, acquisition, indexDir, visualPath);
+    VisualIndex? visual = VisualIndex.TryLoad(visualPath);
+    await MapAsync(index, visual, sections, acquisition);
+
+    Console.Error.WriteLine();
+    Console.Error.WriteLine(visual is null
+        ? "Ask a question, \"map\" for the sections again, or an empty line to stop."
+        : "Ask a question, \"find <description>\" to search the page blocks, \"map\", or an empty line to stop.");
+    while (true)
+    {
+        Console.Error.Write("> ");
+        string? line = Console.ReadLine()?.Trim();
+        if (string.IsNullOrEmpty(line))
+            return 0;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        if (line == "map")
+            await MapAsync(index, visual, sections, acquisition);
+        else if (line.StartsWith("find ", StringComparison.Ordinal) && visual is not null)
+        {
+            FindRegions(visual, line[5..], acquisition, indexDir);
+            Console.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"(found in {timer.Elapsed.TotalSeconds:F2} s)"));
+        }
+        else
+            await AskAsync(index, visual, line, acquisition);
+    }
+}
+
 // Renders every crawled page, splits it into the blocks a visitor sees, and reports where the screen order differs
 // from the order of the HTML: the cases a text-only reader gets wrong.
 static async Task<int> LookAsync(SiteIndex index, int maxRegions, ModelAcquisitionOptions acquisition, string indexDir, string visualPath)
 {
-    using var embedder = Models.EmbeddingGemma2(acquisition);
+    var embedder = Models.EmbeddingGemma2(acquisition);
     using SampleServer? server = index.Site == SampleServer.DefaultUrl.ToString()
         ? new SampleServer(Path.Combine(AppContext.BaseDirectory, "sample-site"), SampleServer.DefaultUrl.Port)
         : null;
@@ -373,7 +417,7 @@ static async Task<int> LookAsync(SiteIndex index, int maxRegions, ModelAcquisiti
 // Text-to-image search over the page regions: the description and the crops share EmbeddingGemma 2's space.
 static int FindRegions(VisualIndex visual, string description, ModelAcquisitionOptions acquisition, string indexDir)
 {
-    using var embedder = Models.EmbeddingGemma2(acquisition);
+    var embedder = Models.EmbeddingGemma2(acquisition);
     float[] query = embedder.Embed(EmbeddingGemma2MultimodalInput.FromText(description), EmbeddingGemma2Prompt.Query);
     var ranked = visual.Pages
         .SelectMany(p => p.Regions.Select(r => (Page: p, Region: r, Score: TensorPrimitives.CosineSimilarity(query, r.Vector))))
