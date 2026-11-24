@@ -53,6 +53,7 @@ async Task<int> RunAsync()
     int delayMs = 500;
     int? sections = null;
     int maxRegions = 5;
+    var verification = CacheVerification.Sha256;
     string? positional = null;
     for (int i = 1; i < args.Length; i++)
     {
@@ -72,6 +73,10 @@ async Task<int> RunAsync()
                 case "--delay": delayMs = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "--sections": sections = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "--max-regions": maxRegions = int.Parse(value, CultureInfo.InvariantCulture); break;
+                // size: check file sizes only, for repeated runs on a cache that download already verified by SHA-256.
+                case "--verify" when value is "sha256" or "size":
+                    verification = value == "size" ? CacheVerification.Size : CacheVerification.Sha256;
+                    break;
                 default: return Usage();
             }
         }
@@ -82,7 +87,7 @@ async Task<int> RunAsync()
     }
 
     Models.WarnIfCudaEnvironmentMissing();
-    var acquisition = new ModelAcquisitionOptions { CacheDirectory = cache };
+    var acquisition = new ModelAcquisitionOptions { CacheDirectory = cache, Verification = args[0].StartsWith("download", StringComparison.Ordinal) ? CacheVerification.Sha256 : verification };
     string indexPath = Path.Combine(indexDir, "index.json");
     string visualPath = Path.Combine(indexDir, "visual.json");
     switch (args[0])
@@ -121,7 +126,8 @@ async Task<int> RunAsync()
 static int Usage()
 {
     Console.Error.WriteLine("""
-        Every command except download takes --cuda (build with -p:NativeRuntime=cuda).
+        Every command except download takes --cuda (build with -p:NativeRuntime=cuda) and --verify size|sha256
+        (default sha256). ask - reads questions from standard input and loads the models once.
         usage: SiteReader download [--cache <dir>]
                SiteReader crawl <url | sample> [--max-pages <n>] [--delay <ms>] [--index <dir>] [--cache <dir>]
                SiteReader map [--sections <k>] [--index <dir>] [--cache <dir>]
@@ -247,13 +253,36 @@ static async Task<int> MapAsync(SiteIndex index, VisualIndex? visual, int? secti
     return 0;
 }
 
-// Retrieval over the saved passages, then an answer from Qwen3.5 that cites the pages it used.
+// Retrieval over the saved passages, then an answer from Qwen3.5 that cites the pages it used. With "-" as the
+// question, questions are read from standard input one per line and the models are loaded once for all of them.
 static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string question, ModelAcquisitionOptions acquisition)
 {
-    float[] query;
-    using (var embedder = Models.E5(acquisition))
-        query = embedder.Embed($"query: {question}");
+    using var embedder = Models.E5(acquisition);
+    using IChatClient chat = Models.Qwen(acquisition);
+    IEnumerable<string> questions = question == "-"
+        ? ReadLines(Console.In).Where(q => !string.IsNullOrWhiteSpace(q))
+        : [question];
+    foreach (string q in questions)
+    {
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        float[] query = embedder.Embed($"query: {q}");
+        TimeSpan retrieval = timer.Elapsed;
+        var (generation, tokens) = await AnswerAsync(index, visual, q, query, chat);
+        Console.Error.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"(answered in {(retrieval + generation).TotalSeconds:F2} s: query embedding {retrieval.TotalMilliseconds:F0} ms, " +
+            $"generation {generation.TotalSeconds:F2} s for {tokens} tokens, {tokens / generation.TotalSeconds:F0} tokens/s)"));
+    }
+    return 0;
 
+    static IEnumerable<string> ReadLines(TextReader reader)
+    {
+        while (reader.ReadLine() is { } line)
+            yield return line;
+    }
+}
+
+static async Task<(TimeSpan Generation, int Tokens)> AnswerAsync(SiteIndex index, VisualIndex? visual, string question, float[] query, IChatClient chat)
+{
     var top = index.Passages
         .Select(p => (Passage: p, Score: TensorPrimitives.CosineSimilarity(query, p.Vector)))
         .OrderByDescending(x => x.Score)
@@ -287,7 +316,6 @@ static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string que
         notices.FirstOrDefault(n => n.Url == x.Passage.Url) is { Text: { } banner }
             ? $"[{i + 1}] {x.Passage.Title}. NOTICE AT THE TOP OF THIS PAGE: {banner} Page text: {x.Passage.Text}"
             : $"[{i + 1}] {x.Passage.Title}: {x.Passage.Text}"));
-    using IChatClient chat = Models.Qwen(acquisition);
     ChatMessage[] messages =
     [
         new(ChatRole.System, "Answer the question briefly using only the numbered passages from the website. Cite passages in " +
@@ -298,10 +326,17 @@ static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string que
     ];
     Console.WriteLine($"Question: {question}");
     Console.Write("Answer: ");
+    var timer = System.Diagnostics.Stopwatch.StartNew();
+    int tokens = 0;
     await foreach (var update in chat.GetStreamingResponseAsync(messages, new ChatOptions { MaxOutputTokens = 200 }))
+    {
         Console.Write(update.Text);
+        // The last update reports the usage of the whole response.
+        foreach (var usage in update.Contents.OfType<UsageContent>())
+            tokens = (int)(usage.Details.OutputTokenCount ?? tokens);
+    }
     Console.WriteLine();
-    return 0;
+    return (timer.Elapsed, tokens);
 }
 
 // Renders every crawled page, splits it into the blocks a visitor sees, and reports where the screen order differs

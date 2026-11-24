@@ -166,7 +166,18 @@ Each command prints how long it took. On the sample site, on one machine: an Int
 | `ask` | 20 to 23 s | 14 to 15 s |
 | `find` | 13.8 s | 14.3 s |
 
-The answers, block labels and `find` scores were the same on both. `look` is where the GPU matters: it embeds one image per block. The other steps embed a handful of texts or generate one short answer, so most of their time is loading the models when the process starts, and `crawl` mostly waits between requests. Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
+The answers, block labels and `find` scores were the same on both. `look` is where the GPU matters in this table: it embeds one image per block. The other steps embed a handful of texts or generate one short answer, so most of their time is loading the models when the process starts, and `crawl` mostly waits between requests.
+
+Each model load prints where its time went, and `ask -` reads questions from standard input so the models load once. Three questions in one process:
+
+| Stage | CPU | CUDA |
+| --- | --- | --- |
+| Checking the files of e5 and Qwen3.5 (SHA-256 of 3.6 GB) | 9.4 s | 8.9 s |
+| Creating the two models | 5.9 s | 4.5 s |
+| Answer of 76 tokens (prompt included) | 10.5 s | 2.1 s |
+| Answers of 10 to 12 tokens (prompt included) | 3.1 to 3.9 s | 0.3 to 0.4 s |
+
+Once the models are loaded, the GPU answers four to ten times faster; a one-question `ask` mostly measures the load. The SHA-256 check is the library's default and protects against a corrupted or altered cache. After `download` has verified the files once, `--verify size` checks only their sizes, which takes the check to zero on later runs (`ask` with three questions on CUDA: 16.7 s with SHA-256, 8.8 s with sizes only). Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
 
 ## What it gets wrong
 
