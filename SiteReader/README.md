@@ -32,7 +32,7 @@ dotnet run -c Release -- look
 dotnet run -c Release -- find "a map of the library branches"
 ```
 
-The output below is from a run on Linux x64 on a 12-thread CPU, on the published 0.5.0 packages.
+The output below is from a run on Linux x64 on an Intel Core i7-5820K (AVX2), on the published 0.5.0 packages.
 
 ### crawl
 
@@ -145,13 +145,36 @@ Looking for: a form to sign up
 
 Labels come from comparing each block's image embedding with short descriptions ("a table of information", "a form with text fields", ...). A raw comparison favours a few generic descriptions, so each block takes the description it matches better than the site's blocks match it on average.
 
+## On a GPU
+
+Build with the CUDA natives and pass `--cuda` to each command. Linux x64 only; the CUDA 13 runtime and cuDNN 9 must be on the loader path, and GLiNER2 and EmbeddingGemma 2 on CUDA need `MALLOC_MMAP_THRESHOLD_=65536` in the environment the process starts with (the program warns if it is missing). `CUDA_VISIBLE_DEVICES` picks the GPU.
+
+```sh
+export MALLOC_MMAP_THRESHOLD_=65536
+dotnet run -c Release -p:NativeRuntime=cuda -- crawl sample --cuda
+dotnet run -c Release -p:NativeRuntime=cuda -- look --cuda
+dotnet run -c Release -p:NativeRuntime=cuda -- ask "Can I go to the Harbour Branch on Saturday morning?" --cuda
+```
+
+Each command prints how long it took. On the sample site, on one machine: an Intel Core i7-5820K for the CPU column and a consumer NVIDIA GPU for the CUDA column:
+
+| Step | CPU | CUDA |
+| --- | --- | --- |
+| `crawl` (18 pages) | 18.4 s | 17.0 s |
+| `look` (60 regions) | 4.5 min | 41.8 s |
+| `map` | 19.3 s | 12.5 s |
+| `ask` | 20 to 23 s | 14 to 15 s |
+| `find` | 13.8 s | 14.3 s |
+
+The answers, block labels and `find` scores were the same on both. `look` is where the GPU matters: it embeds one image per block. The other steps embed a handful of texts or generate one short answer, so most of their time is loading the models when the process starts, and `crawl` mostly waits between requests. Starling tests its CUDA profiles on an RTX 3090 only; the GPU used here is outside that contract.
+
 ## What it gets wrong
 
 - Qwen3.5-0.8B is a small model. It sometimes lists every passage instead of answering, as in the Harbour Branch answer above, and it can be wrong; the sources are printed so you can check.
 - The sections are clusters, not a site map. In the run above, Contact lands with the services pages and the home page with the events, because that is what their text is closest to.
 - Block labels are right for menus, footers, tables, forms, banners and the map on the sample site, and wrong for cards: two of the three event cards were labelled as paragraphs and the third as a warning banner, and one card on the home page as a welcome banner. `ask` therefore acts only on structure (a block moved to the top, or marked `role="alert"`), never on a label alone.
 - Images are embedded, not read: there is no OCR yet, so text that exists only inside an image is not in the index. EmbeddingGemma 2 appears to pick up some rendered text (the closure banner ranks first for "a notice that a branch is closed", though its colour alone could explain that), but it is not a transcript.
-- `look` takes about 5 s per block on CPU. Repeated blocks (the same header and footer on every page) are embedded once; the sample site took 4.5 minutes. Use `--max-regions` to keep fewer blocks per page, or a CUDA build of ONNX Runtime.
+- `look` takes about 5 s per block on CPU. Repeated blocks (the same header and footer on every page) are embedded once; the sample site took 4.5 minutes. Use `--max-regions` to keep fewer blocks per page, or a GPU (below 1 minute on the sample site; see above).
 - The crawler reads server-rendered HTML. Pages built entirely by JavaScript have no text for `crawl` and are skipped, so `look`, which visits the pages `crawl` kept, never sees them either.
 
 ## Crawling other sites

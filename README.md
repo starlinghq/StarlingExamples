@@ -24,7 +24,7 @@ The planned examples are described below so the intent is clear before the code 
 
 ### PhotoAlbums
 
-EmbeddingGemma 2 puts images and text in one embedding space. The example embeds every photo in a folder, clusters the vectors with ML.NET k-means into albums, and names each album by comparing its centre with a list of candidate descriptions ("a beach", "a birthday party", "a city at night"). The same index answers text searches such as "two people on a bridge". Vision is about 4.5 s per photo on a 12-thread CPU, so the index is cached and only new photos are embedded.
+EmbeddingGemma 2 puts images and text in one embedding space. The example embeds every photo in a folder, clusters the vectors with ML.NET k-means into albums, and names each album by comparing its centre with a list of candidate descriptions ("a beach", "a birthday party", "a city at night"). The same index answers text searches such as "two people on a bridge". Vision takes seconds per photo on a CPU, so the index is cached and only new photos are embedded.
 
 ### VideoMoments
 

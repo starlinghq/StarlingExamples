@@ -7,6 +7,9 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <StarlingsVersion>0.5.0</StarlingsVersion>
+    <!-- cpu (default) or cuda. For CUDA, build with -p:NativeRuntime=cuda and run each command with the cuda option. -->
+    <NativeRuntime Condition="'$(NativeRuntime)' == ''">cpu</NativeRuntime>
+    <NuGetLockFilePath Condition="'$(NativeRuntime)' == 'cuda'">packages.cuda.lock.json</NuGetLockFilePath>
   </PropertyGroup>
   <ItemGroup>
     <!-- Brings Microsoft.ML (MLContext, k-means) and Starlings.Models.E5. -->
@@ -20,9 +23,11 @@
     <!-- HTML parsing for the crawler; a headless browser for look. -->
     <PackageReference Include="AngleSharp" Version="1.9.1" />
     <PackageReference Include="Microsoft.Playwright" Version="1.64.1" />
-    <!-- Exactly one ONNX Runtime native package, chosen by the application (CPU here). -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI" Version="0.17.1" />
+    <!-- Exactly one ONNX Runtime native package (and one GenAI package), chosen by the application. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" Condition="'$(NativeRuntime)' == 'cpu'" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI" Version="0.17.1" Condition="'$(NativeRuntime)' == 'cpu'" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu.Linux" Version="1.30.0" Condition="'$(NativeRuntime)' == 'cuda'" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Cuda" Version="0.17.1" Condition="'$(NativeRuntime)' == 'cuda'" />
   </ItemGroup>
   <ItemGroup>
     <None Include="sample-site/**" CopyToOutputDirectory="PreserveNewest" />

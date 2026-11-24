@@ -29,7 +29,12 @@ using Starlings.Models.Qwen35.Extensions.AI;
 
 try
 {
-    return await RunAsync();
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    int exitCode = await RunAsync();
+    if (exitCode == 0 && args[0] is not ("download" or "download-visual"))
+        Console.Error.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"({args[0]} took {stopwatch.Elapsed.TotalSeconds:F1} s{(Models.Cuda ? " on CUDA" : " on the CPU")})"));
+    return exitCode;
 }
 catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
 {
@@ -52,7 +57,9 @@ async Task<int> RunAsync()
     for (int i = 1; i < args.Length; i++)
     {
         string option = args[i];
-        if (option.StartsWith("--", StringComparison.Ordinal))
+        if (option == "--cuda")
+            Models.Cuda = true;
+        else if (option.StartsWith("--", StringComparison.Ordinal))
         {
             if (i + 1 == args.Length)
                 return Usage();
@@ -74,6 +81,7 @@ async Task<int> RunAsync()
             return Usage();
     }
 
+    Models.WarnIfCudaEnvironmentMissing();
     var acquisition = new ModelAcquisitionOptions { CacheDirectory = cache };
     string indexPath = Path.Combine(indexDir, "index.json");
     string visualPath = Path.Combine(indexDir, "visual.json");
@@ -113,6 +121,7 @@ async Task<int> RunAsync()
 static int Usage()
 {
     Console.Error.WriteLine("""
+        Every command except download takes --cuda (build with -p:NativeRuntime=cuda).
         usage: SiteReader download [--cache <dir>]
                SiteReader crawl <url | sample> [--max-pages <n>] [--delay <ms>] [--index <dir>] [--cache <dir>]
                SiteReader map [--sections <k>] [--index <dir>] [--cache <dir>]
@@ -130,8 +139,8 @@ static async Task<int> CrawlAsync(string target, int maxPages, TimeSpan delay, M
     string indexDir, string indexPath)
 {
     // Load the models before the crawl, so a missing download fails fast and not after a long crawl.
-    using var embedder = E5TextEmbedder.Create(E5ModelAssets.OpenLocal(acquisition));
-    using var extractor = Gliner2EntityExtractor.Create(Gliner2ModelAssets.OpenLocal(acquisition));
+    using var embedder = Models.E5(acquisition);
+    using var extractor = Models.Gliner2(acquisition);
 
     using SampleServer? server = target == "sample"
         ? new SampleServer(Path.Combine(AppContext.BaseDirectory, "sample-site"), SampleServer.DefaultUrl.Port)
@@ -223,7 +232,7 @@ static async Task<int> MapAsync(SiteIndex index, VisualIndex? visual, int? secti
             $"Sample: {members[0].Page.Passages[0].Text}");
     }
 
-    using IChatClient chat = Qwen35ChatClient.Create(Qwen35ModelAssets.OpenLocal(Qwen35Variant.Fp32x, acquisition));
+    using IChatClient chat = Models.Qwen(acquisition);
     ChatMessage[] messages =
     [
         new(ChatRole.System, "You describe websites. Using only the outline, write two or three plain sentences saying who the " +
@@ -242,7 +251,7 @@ static async Task<int> MapAsync(SiteIndex index, VisualIndex? visual, int? secti
 static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string question, ModelAcquisitionOptions acquisition)
 {
     float[] query;
-    using (var embedder = E5TextEmbedder.Create(E5ModelAssets.OpenLocal(acquisition)))
+    using (var embedder = Models.E5(acquisition))
         query = embedder.Embed($"query: {question}");
 
     var top = index.Passages
@@ -278,7 +287,7 @@ static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string que
         notices.FirstOrDefault(n => n.Url == x.Passage.Url) is { Text: { } banner }
             ? $"[{i + 1}] {x.Passage.Title}. NOTICE AT THE TOP OF THIS PAGE: {banner} Page text: {x.Passage.Text}"
             : $"[{i + 1}] {x.Passage.Title}: {x.Passage.Text}"));
-    using IChatClient chat = Qwen35ChatClient.Create(Qwen35ModelAssets.OpenLocal(Qwen35Variant.Fp32x, acquisition));
+    using IChatClient chat = Models.Qwen(acquisition);
     ChatMessage[] messages =
     [
         new(ChatRole.System, "Answer the question briefly using only the numbered passages from the website. Cite passages in " +
@@ -299,7 +308,7 @@ static async Task<int> AskAsync(SiteIndex index, VisualIndex? visual, string que
 // from the order of the HTML: the cases a text-only reader gets wrong.
 static async Task<int> LookAsync(SiteIndex index, int maxRegions, ModelAcquisitionOptions acquisition, string indexDir, string visualPath)
 {
-    using var embedder = EmbeddingGemma2MultimodalEmbedder.Create(EmbeddingGemma2ModelAssets.OpenLocalImageAssets(acquisition));
+    using var embedder = Models.EmbeddingGemma2(acquisition);
     using SampleServer? server = index.Site == SampleServer.DefaultUrl.ToString()
         ? new SampleServer(Path.Combine(AppContext.BaseDirectory, "sample-site"), SampleServer.DefaultUrl.Port)
         : null;
@@ -329,7 +338,7 @@ static async Task<int> LookAsync(SiteIndex index, int maxRegions, ModelAcquisiti
 // Text-to-image search over the page regions: the description and the crops share EmbeddingGemma 2's space.
 static int FindRegions(VisualIndex visual, string description, ModelAcquisitionOptions acquisition, string indexDir)
 {
-    using var embedder = EmbeddingGemma2MultimodalEmbedder.Create(EmbeddingGemma2ModelAssets.OpenLocalImageAssets(acquisition));
+    using var embedder = Models.EmbeddingGemma2(acquisition);
     float[] query = embedder.Embed(EmbeddingGemma2MultimodalInput.FromText(description), EmbeddingGemma2Prompt.Query);
     var ranked = visual.Pages
         .SelectMany(p => p.Regions.Select(r => (Page: p, Region: r, Score: TensorPrimitives.CosineSimilarity(query, r.Vector))))
